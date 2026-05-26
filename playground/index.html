@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify a Story in your Browser — H33</title>
+<meta name="description" content="Drop a replay bundle or signed verification report. Verify it locally in your browser. No server. No daemon. No trust required.">
+<meta property="og:title" content="Verify a Story in your Browser — H33">
+<meta property="og:description" content="The same Rust verifier the CLI runs, compiled to WebAssembly. ML-DSA signature verification in pure JS. Zero network calls.">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://h33.ai/verify-the-story/playground/">
+<style>
+  :root {
+    --ink-950: #0a0a0a;
+    --ink-900: #131313;
+    --ink-800: #1c1c1c;
+    --ink-700: #2a2a2a;
+    --ink-400: #9a9a9a;
+    --ink-300: #c4c4c4;
+    --ink-200: #e5e5e5;
+    --copper: #b87333;
+    --copper-2: #d18a45;
+    --green: #5ab574;
+    --red: #c95252;
+    --amber: #d4a256;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--ink-950); color: var(--ink-300); font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif; line-height: 1.5; }
+  code, pre, .mono { font-family: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+  a { color: var(--copper-2); text-decoration: none; }
+  a:hover { color: var(--copper); text-decoration: underline; }
+  header { padding: 32px 24px 16px; max-width: 980px; margin: 0 auto; }
+  header .brand { font-family: 'DM Mono'; font-size: 14px; color: var(--copper); letter-spacing: 0.05em; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px 24px 64px; }
+  h1 { font-size: clamp(24px, 3.5vw, 38px); line-height: 1.15; color: var(--ink-200); margin: 16px 0 24px; font-weight: 500; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; color: var(--ink-300); font-weight: 500; margin: 40px 0 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+  p { margin: 12px 0; color: var(--ink-400); }
+  p.lead { color: var(--ink-300); font-size: 17px; max-width: 720px; }
+  .badge { display: inline-block; padding: 2px 8px; background: var(--ink-800); color: var(--copper); border-radius: 3px; font-family: 'DM Mono'; font-size: 11px; letter-spacing: 0.05em; }
+  .trust-note { background: var(--ink-900); border-left: 3px solid var(--copper); padding: 14px 18px; margin: 16px 0 28px; border-radius: 4px; font-size: 14px; color: var(--ink-300); }
+  .trust-note strong { color: var(--ink-200); font-weight: 500; }
+  .drop {
+    border: 2px dashed var(--ink-700);
+    background: var(--ink-900);
+    border-radius: 8px;
+    padding: 32px 24px;
+    text-align: center;
+    transition: all 0.15s;
+    cursor: pointer;
+  }
+  .drop:hover, .drop.dragover { border-color: var(--copper); background: var(--ink-800); }
+  .drop .icon { font-family: 'DM Mono'; font-size: 28px; color: var(--ink-700); margin-bottom: 8px; }
+  .drop .hint { color: var(--ink-300); font-size: 15px; }
+  .drop .sub { color: var(--ink-400); font-size: 13px; margin-top: 4px; }
+  .btn-row { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn { display: inline-block; background: var(--ink-900); border: 1px solid var(--ink-700); color: var(--ink-300); padding: 8px 14px; border-radius: 4px; font-family: 'DM Mono'; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+  .btn:hover { border-color: var(--copper); color: var(--copper-2); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .result { margin-top: 28px; }
+  .result.hidden { display: none; }
+  .verdict { padding: 18px 22px; border-radius: 4px; margin-bottom: 18px; }
+  .verdict.pass { background: var(--ink-900); border-left: 3px solid var(--green); }
+  .verdict.fail { background: var(--ink-900); border-left: 3px solid var(--red); }
+  .verdict.warn { background: var(--ink-900); border-left: 3px solid var(--amber); }
+  .verdict .tag { font-family: 'DM Mono'; font-size: 13px; font-weight: 600; letter-spacing: 0.05em; }
+  .verdict.pass .tag { color: var(--green); }
+  .verdict.fail .tag { color: var(--red); }
+  .verdict.warn .tag { color: var(--amber); }
+  .verdict .meta { font-family: 'DM Mono'; font-size: 12px; color: var(--ink-400); margin-top: 6px; }
+  .verdict .err { font-family: 'DM Mono'; font-size: 12px; color: var(--ink-300); margin-top: 8px; word-break: break-word; }
+  .checks { background: var(--ink-900); border: 1px solid var(--ink-800); border-radius: 4px; padding: 14px 18px; }
+  .check-row { display: flex; align-items: flex-start; padding: 4px 0; font-family: 'DM Mono'; font-size: 12px; gap: 12px; }
+  .check-row .pill { display: inline-block; width: 18px; flex-shrink: 0; text-align: center; }
+  .check-row.pass .pill { color: var(--green); }
+  .check-row.fail .pill { color: var(--red); }
+  .check-row.skip .pill { color: var(--amber); }
+  .check-row .name { color: var(--ink-300); min-width: 200px; }
+  .check-row .msg { color: var(--ink-400); word-break: break-word; }
+  details { margin-top: 18px; background: var(--ink-900); border: 1px solid var(--ink-800); border-radius: 4px; padding: 10px 14px; }
+  details summary { cursor: pointer; font-family: 'DM Mono'; font-size: 12px; color: var(--ink-300); user-select: none; }
+  details[open] summary { color: var(--copper-2); margin-bottom: 8px; }
+  details pre { font-size: 11px; color: var(--ink-400); white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto; padding: 8px 0 0; }
+  .panel { background: var(--ink-900); border: 1px solid var(--ink-800); border-radius: 6px; padding: 18px 20px; }
+  .panel h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--copper); margin-bottom: 10px; font-weight: 500; }
+  .panel p { margin: 8px 0; font-size: 14px; color: var(--ink-400); }
+  .panel li { font-size: 14px; color: var(--ink-400); margin: 4px 0 4px 18px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+  hr { border: none; border-top: 1px solid var(--ink-800); margin: 48px 0 32px; }
+  footer { max-width: 980px; margin: 0 auto; padding: 24px; color: var(--ink-400); font-size: 12px; font-family: 'DM Mono'; }
+  footer a { color: var(--ink-400); }
+  .key { color: var(--copper); }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500;600&family=DM+Sans:wght@400;500;600&display=swap">
+</head>
+<body>
+<header>
+  <div class="brand"><a href="https://h33.ai">H33</a> &nbsp;·&nbsp; <a href="/verify-the-story/">verify-the-story</a> &nbsp;·&nbsp; playground &nbsp;·&nbsp; <span class="badge">v0.2.1</span></div>
+</header>
+
+<main>
+
+<h1>Verify a story in your browser.<br>No server. No daemon. No trust required.</h1>
+
+<p class="lead">Drop a replay bundle or a signed verification report. Both get checked locally — the bundle by the same Rust verifier the CLI runs (compiled to WebAssembly), the signed report by a standards-conformant ML-DSA-65 signature check in pure JS. Zero network calls after this page loads.</p>
+
+<div class="trust-note">
+<strong>Trust boundary:</strong> Replay verification runs in WebAssembly — the exact same Rust core that drives <code>h33-replay-verify</code>. Signed-transcript verification runs in JavaScript against the published ML-DSA public key embedded in each transcript; any FIPS-204-conformant verifier produces the same answer.
+</div>
+
+<div id="drop" class="drop">
+  <div class="icon">⬇</div>
+  <div class="hint">Drop a <strong>replay bundle</strong> or <strong>signed report</strong> JSON file here</div>
+  <div class="sub">…or click to choose. Or paste JSON below.</div>
+  <input type="file" id="file-input" accept="application/json,.json" style="display:none">
+</div>
+
+<div class="btn-row">
+  <button class="btn" id="load-bundle">load example bundle</button>
+  <button class="btn" id="load-signed">load example signed report</button>
+  <button class="btn" id="toggle-paste">paste JSON instead</button>
+</div>
+
+<textarea id="paste" style="display:none; width:100%; min-height:160px; margin-top:12px; padding:12px; background:var(--ink-900); color:var(--ink-200); border:1px solid var(--ink-800); border-radius:4px; font-family:'DM Mono'; font-size:12px;" placeholder='Paste replay-bundle JSON or signed-report JSON here, then press Verify'></textarea>
+<div id="paste-row" class="btn-row" style="display:none">
+  <button class="btn" id="verify-paste">verify pasted JSON</button>
+</div>
+
+<div id="result" class="result hidden"></div>
+
+<hr>
+
+<h2>What this proves</h2>
+<div class="grid2">
+  <div class="panel">
+    <h3>Replay bundle (WASM)</h3>
+    <p>Same 10-check protocol as <code>h33-replay-verify</code>. Schema parses, timeline orders, every chain hash recomputes, frame refs resolve, continuity is consistent, no orphans, hash algorithms recognized, no cross-tenant rows, substrate bindings recompute. Bundle is bit-identical to what H33 recorded at export time.</p>
+  </div>
+  <div class="panel">
+    <h3>Signed report (JS)</h3>
+    <p>ML-DSA-65 (FIPS 204) detached signature over the embedded canonical payload, verified locally against the public key shipped inside the transcript. Confirms a specific verifier identity (by SHA3-256 fingerprint) ran v<code>verifier_version</code> against a specific bundle hash at a specific time and produced exactly the stated per-check verdicts.</p>
+  </div>
+</div>
+
+<h2>What this does NOT prove</h2>
+<div class="grid2">
+  <div class="panel">
+    <h3>Completeness</h3>
+    <p>A bundle may be a truthful subset (e.g., date-range export). PASS does not assert "this is every event the case ever had."</p>
+  </div>
+  <div class="panel">
+    <h3>Receipt validity</h3>
+    <p>The 74-byte H33 receipts inside the bundle are validated by <code>h33-verify</code>, not the replay verifier. Use both for full coverage.</p>
+  </div>
+  <div class="panel">
+    <h3>On-chain anchor</h3>
+    <p>If the bundle was anchored to Polygon / Bitcoin / Solana, this playground does not look up the anchor transaction. Pair with the chain-specific verifier.</p>
+  </div>
+  <div class="panel">
+    <h3>Verifier identity</h3>
+    <p>A signed transcript proves <em>some verifier</em> with this public-key fingerprint produced this verdict. Whether that fingerprint belongs to whom you think it does is established out of band (allow-list, registry).</p>
+  </div>
+</div>
+
+<h2>Run it yourself in the terminal</h2>
+<p>This playground is a thin wrapper. The same Rust core ships as a CLI — install once, verify anywhere:</p>
+<div style="background:var(--ink-900); border:1px solid var(--ink-800); border-radius:6px; padding:14px 18px; font-family:'DM Mono'; font-size:13px; color:var(--ink-200);">
+<span style="color:var(--copper)">$</span> curl -L -o h33-replay-verify https://h33.ai/dl/h33-replay-verify/v0.2.0/h33-replay-verify-v0.2.0-darwin-arm64<br>
+<span style="color:var(--copper)">$</span> chmod +x h33-replay-verify<br>
+<span style="color:var(--copper)">$</span> ./h33-replay-verify case-bundle.json --sign &gt; signed-report.json<br>
+<span style="color:var(--copper)">$</span> ./h33-replay-verify --verify-transcript signed-report.json
+</div>
+
+</main>
+
+<footer>
+  h33.ai · <a href="/">home</a> · <a href="/verify-the-story/">verify-the-story</a> · <a href="https://github.com/H33ai/h33-replay-verifier/blob/main/spec/h33-replay-bundle-v0.1.md">bundle spec</a> · <a href="https://github.com/H33ai/h33-replay-verifier/blob/main/spec/h33-signed-verify-report-v0.1.md">signed-report spec</a> · <a href="mailto:support@h33.ai">support@h33.ai</a>
+</footer>
+
+<script type="module">
+import init, { verifyBundle, verifierVersion, sha3_256Hex } from './wasm/h33_replay_verify_wasm.js';
+import { ml_dsa65 } from 'https://esm.sh/@noble/post-quantum@0.4.0/ml-dsa';
+
+const ENVELOPE_VERSION  = 'h33-signed-verify-report/0.1';
+const PAYLOAD_DOMAIN    = 'h33-signed-verify-report/0.1';
+const SIG_ALGORITHM     = 'ML-DSA-65';
+// Relative paths so the playground works identically on both
+// h33.ai/verify-the-story/playground/ and H33ai.github.io/h33-replay-verifier/playground/.
+const BUNDLE_EXAMPLE    = './fixtures/example-case-bundle.json';
+const SIGNED_EXAMPLE    = './fixtures/example-signed-report.json';
+
+const dropEl   = document.getElementById('drop');
+const fileEl   = document.getElementById('file-input');
+const resultEl = document.getElementById('result');
+const pasteEl  = document.getElementById('paste');
+const pasteRow = document.getElementById('paste-row');
+
+let wasmReady = false;
+await init();
+wasmReady = true;
+
+// ── file / drop wiring ───────────────────────────────────────────────────────
+dropEl.addEventListener('click', () => fileEl.click());
+fileEl.addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) handleFile(f);
+});
+dropEl.addEventListener('dragover', e => { e.preventDefault(); dropEl.classList.add('dragover'); });
+dropEl.addEventListener('dragleave', () => dropEl.classList.remove('dragover'));
+dropEl.addEventListener('drop', e => {
+  e.preventDefault();
+  dropEl.classList.remove('dragover');
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+
+document.getElementById('load-bundle').addEventListener('click', async () => {
+  const text = await (await fetch(BUNDLE_EXAMPLE)).text();
+  await dispatch(text, 'example-case-bundle.json');
+});
+document.getElementById('load-signed').addEventListener('click', async () => {
+  const text = await (await fetch(SIGNED_EXAMPLE)).text();
+  await dispatch(text, 'example-signed-report.json');
+});
+document.getElementById('toggle-paste').addEventListener('click', () => {
+  const showing = pasteEl.style.display === 'block';
+  pasteEl.style.display = pasteRow.style.display = showing ? 'none' : 'block';
+});
+document.getElementById('verify-paste').addEventListener('click', async () => {
+  const t = pasteEl.value.trim();
+  if (t) await dispatch(t, 'pasted.json');
+});
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => dispatch(e.target.result, file.name);
+  reader.readAsText(file);
+}
+
+// ── dispatch: auto-detect bundle vs signed report ───────────────────────────
+async function dispatch(text, name) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    return renderError(`Could not parse ${name}: ${e.message}`);
+  }
+  if (parsed && parsed.envelope_version === ENVELOPE_VERSION) {
+    return verifySignedReport(parsed, name);
+  }
+  if (parsed && typeof parsed.version === 'string' && parsed.export_metadata) {
+    return verifyReplayBundle(text, parsed, name);
+  }
+  renderError(`${name} is neither a recognized replay bundle (top-level <code>version</code> + <code>export_metadata</code>) nor a signed report (<code>envelope_version="${ENVELOPE_VERSION}"</code>).`);
+}
+
+// ── replay bundle verification (WASM) ───────────────────────────────────────
+function verifyReplayBundle(text, parsed, name) {
+  if (!wasmReady) return renderError('WASM not yet initialized — try again in a second.');
+  let report;
+  try {
+    report = verifyBundle(text, false);
+  } catch (e) {
+    return renderError(`WASM verifier rejected ${name}: ${e.message}`);
+  }
+  const verdict = report.passed ? 'pass' : 'fail';
+  const tag = report.passed ? 'PASS' : 'FAIL';
+  const verifierVer = (() => { try { return verifierVersion(); } catch { return 'unknown'; } })();
+  let html = `
+    <div class="verdict ${verdict}">
+      <div class="tag">${tag} — replay bundle, 10-check protocol</div>
+      <div class="meta">verifier ${escape(verifierVer)} · bundle ${escape(report.bundle_version)} · tenant ${escape(report.tenant_id)} · case ${escape(report.case_id)}</div>
+    </div>
+    <div class="checks">${renderChecks(report.checks)}</div>
+    ${renderWarnings(report.warnings)}
+    <details><summary>Raw verifier report</summary><pre>${escape(JSON.stringify(report, null, 2))}</pre></details>
+  `;
+  showResult(html);
+}
+
+// ── signed report verification (pure JS) ─────────────────────────────────────
+async function verifySignedReport(envelope, name) {
+  const t = envelope.signed_transcript;
+  if (!t) return renderError(`${name} envelope is missing signed_transcript.`);
+  if (t.signature_algorithm !== SIG_ALGORITHM) {
+    return renderError(`Signature algorithm mismatch — expected ${SIG_ALGORITHM}, got ${escape(t.signature_algorithm)}.`);
+  }
+
+  let pkBytes, sigBytes, payloadBytes;
+  try {
+    pkBytes      = b64decode(t.verifier_public_key_b64);
+    sigBytes     = b64decode(t.signature_b64);
+    payloadBytes = b64decode(t.signed_payload_b64);
+  } catch (e) {
+    return renderError(`Base64 decode failed: ${e.message}`);
+  }
+
+  // Fingerprint cross-check (envelope ⇄ public key)
+  const fpActual = await sha3HexJs(pkBytes);
+  if (fpActual !== t.verifier_public_key_fingerprint_hex) {
+    return renderError(`Public-key fingerprint mismatch.<br>envelope: <code>${escape(t.verifier_public_key_fingerprint_hex)}</code><br>SHA3-256(pubkey): <code>${escape(fpActual)}</code>`);
+  }
+
+  // Signed-payload hash cross-check
+  const payloadHashActual = await sha3HexJs(payloadBytes);
+  if (payloadHashActual !== t.signed_payload_sha3_256_hex) {
+    return renderError(`Signed-payload SHA3-256 mismatch — envelope claims <code>${escape(t.signed_payload_sha3_256_hex)}</code>, bytes hash to <code>${escape(payloadHashActual)}</code>.`);
+  }
+
+  // ML-DSA-65 verify
+  let sigOk;
+  try {
+    sigOk = ml_dsa65.verify(pkBytes, payloadBytes, sigBytes);
+  } catch (e) {
+    return renderError(`ML-DSA-65 verifier threw: ${e.message}`);
+  }
+  if (!sigOk) {
+    return renderError(`ML-DSA-65 signature did NOT verify. Envelope is tampered or the signature is invalid.`);
+  }
+
+  // Parse the now-trusted payload + render
+  let payload;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(payloadBytes));
+  } catch (e) {
+    return renderError(`Signed payload is not valid JSON: ${e.message}`);
+  }
+  if (payload.domain !== PAYLOAD_DOMAIN) {
+    return renderError(`Signed payload domain mismatch — expected <code>${PAYLOAD_DOMAIN}</code>, got <code>${escape(payload.domain)}</code>.`);
+  }
+
+  const verdict = payload.passed ? 'pass' : 'fail';
+  const tag = payload.passed ? 'SIGNED PASS' : 'SIGNED FAIL';
+  const fpShort = t.verifier_public_key_fingerprint_hex.slice(0, 8) + '…' + t.verifier_public_key_fingerprint_hex.slice(-8);
+  const html = `
+    <div class="verdict ${verdict}">
+      <div class="tag">${tag} — ML-DSA-65 signature valid</div>
+      <div class="meta">
+        verifier <span class="key">${escape(payload.verifier_name)}</span> v${escape(payload.verifier_version)} · signed ${escape(payload.signed_at)}<br>
+        verifier public-key fingerprint <code>${fpShort}</code><br>
+        bundle SHA3-256 <code>${escape(payload.bundle_sha3_256_hex.slice(0, 8))}…${escape(payload.bundle_sha3_256_hex.slice(-8))}</code> · tenant ${escape(payload.tenant_id)} · case ${escape(payload.case_id)}
+      </div>
+    </div>
+    <div class="checks">${renderChecks(payload.checks.map(c => ({ ...c, message: '' })))}</div>
+    <details><summary>Raw signed payload (the bytes whose signature was verified)</summary><pre>${escape(JSON.stringify(payload, null, 2))}</pre></details>
+    <details><summary>Raw envelope</summary><pre>${escape(JSON.stringify(envelope, null, 2))}</pre></details>
+  `;
+  showResult(html);
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+function renderChecks(checks) {
+  return checks.map(c => {
+    const cls = c.passed ? 'pass' : (c.message && c.message.startsWith('skipped') ? 'skip' : 'fail');
+    const pill = c.passed ? '✓' : (cls === 'skip' ? '○' : '✗');
+    return `<div class="check-row ${cls}">
+      <span class="pill">${pill}</span>
+      <span class="name">${escape(c.check)}</span>
+      <span class="msg">${escape(c.message || '')} ${c.examined !== undefined ? `<span style="color:var(--ink-700)">(examined ${c.examined})</span>` : ''}</span>
+    </div>`;
+  }).join('');
+}
+function renderWarnings(warnings) {
+  if (!warnings || warnings.length === 0) return '';
+  return `<div class="verdict warn" style="margin-top:14px">
+    <div class="tag">WARNINGS</div>
+    ${warnings.map(w => `<div class="err">• ${escape(w)}</div>`).join('')}
+  </div>`;
+}
+function renderError(msg) {
+  showResult(`<div class="verdict fail"><div class="tag">ERROR</div><div class="err">${msg}</div></div>`);
+}
+function showResult(html) {
+  resultEl.innerHTML = html;
+  resultEl.classList.remove('hidden');
+  resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function escape(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+}
+function b64decode(s) {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+// SHA3-256 via the WASM helper (same primitive the CLI uses for bundle hashes)
+async function sha3HexJs(bytes) {
+  return sha3_256Hex(bytes);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/h33-replay-verify-core",
+    "crates/h33-replay-verify-cli",
+]
+# WASM crate has its own [workspace] table — wasm32-unknown-unknown deps don't
+# unify with the native build.
+exclude = ["crates/h33-replay-verify-wasm"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/H33ai/h33-replay-verifier"
+rust-version = "1.75"
+authors = ["H33 / community"]

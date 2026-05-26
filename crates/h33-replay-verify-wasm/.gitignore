@@ -1,0 +1,8 @@
+# wasm-pack build output — generated, never source.
+# The artifacts get copied into the deploy target
+# (e.g. netlify-05082026/verify-the-story/playground/wasm/) at release time.
+pkg/
+
+# Cargo build artifacts for the WASM target (detached workspace).
+target/
+Cargo.lock

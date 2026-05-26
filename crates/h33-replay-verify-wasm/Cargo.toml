@@ -1,0 +1,48 @@
+# Detach from the parent workspace — this crate targets wasm32-unknown-unknown
+# and is built via wasm-pack, not via the workspace cargo. The parent workspace
+# excludes this path; the empty [workspace] here makes the detachment explicit.
+[workspace]
+
+[package]
+name = "h33-replay-verify-wasm"
+version = "0.3.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "H33 replay-bundle verifier — browser/WASM build of the same Rust core that drives the CLI"
+repository = "https://github.com/H33ai/h33-replay-verifier"
+homepage = "https://h33.ai/verify-the-story/playground/"
+
+# CLI is the source of truth. This crate is a thin wasm-bindgen wrapper
+# around `h33-replay-verify-core` so the in-browser playground at
+# /verify-the-story/playground/ runs the exact same verifier code.
+#
+# ML-DSA-65 signed-transcript verification is NOT done here — that runs in
+# pure JS via @noble/post-quantum against the published verifier public key.
+# Keeping the C-shaped pqcrypto dep out of the WASM build keeps it tiny.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+h33-replay-verify-core = { path = "../h33-replay-verify-core" }
+wasm-bindgen = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde-wasm-bindgen = "0.6"
+sha3 = "0.10"
+hex = "0.4"
+# uuid needs the `js` feature on wasm32 (uses Crypto.getRandomValues).
+# Cargo feature unification adds this to the transitive uuid dep from the
+# core crate without requiring the core to know about WASM.
+uuid = { version = "1.7", features = ["v4", "serde", "js"] }
+# Hook Rust panics into console.error so the playground shows real errors
+# instead of "unreachable executed" stack traces.
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[features]
+default = ["console_error_panic_hook"]
+
+[profile.release]
+opt-level = "s"   # optimize for binary size — WASM ships over the wire
+lto = true
+codegen-units = 1

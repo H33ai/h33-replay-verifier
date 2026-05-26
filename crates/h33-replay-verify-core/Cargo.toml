@@ -1,0 +1,24 @@
+[package]
+name = "h33-replay-verify-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "H33 replay-bundle verifier — pure-Rust core (WASM-friendly). Canonical source of the 10-check protocol that drives the CLI, the browser playground, and any third-party verifier."
+readme = "../../README.md"
+keywords = ["replay", "verification", "h33", "post-quantum"]
+categories = ["cryptography"]
+
+[lib]
+name = "h33_replay_verify_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha3 = "0.10"
+hex = "0.4"
+uuid = { version = "1.7", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
