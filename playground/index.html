@@ -97,12 +97,12 @@
 </head>
 <body>
 <header>
-  <div class="brand"><a href="https://h33.ai">H33</a> &nbsp;·&nbsp; <a href="/verify-the-story/">verify-the-story</a> &nbsp;·&nbsp; playground &nbsp;·&nbsp; <span class="badge">v0.2.1</span></div>
+  <div class="brand"><a href="https://h33.ai">H33</a> &nbsp;·&nbsp; <a href="/verify-the-story/">verify-the-story</a> &nbsp;·&nbsp; playground &nbsp;·&nbsp; <span class="badge">v0.4</span></div>
 </header>
 
 <main>
 
-<h1>Verify a story in your browser.<br>No server. No daemon. No trust required.</h1>
+<h1 id="page-h1">Verify a story in your browser.<br>No server. No daemon. No trust required.</h1>
 
 <p class="lead">Drop a replay bundle or a signed verification report. Both get checked locally — the bundle by the same Rust verifier the CLI runs (compiled to WebAssembly), the signed report by a standards-conformant ML-DSA-65 signature check in pure JS. Zero network calls after this page loads.</p>
 
@@ -175,8 +175,12 @@
 
 </main>
 
+<div id="closing-line" style="font-family: 'DM Sans'; font-size: 14px; color: var(--ink-400); font-style: italic; margin: 56px 0 8px; max-width: 720px;">
+  Tokenized assets should not require trust in the original operator to remain verifiable.
+</div>
+
 <footer>
-  h33.ai · <a href="/">home</a> · <a href="/verify-the-story/">verify-the-story</a> · <a href="https://github.com/H33ai/h33-replay-verifier/blob/main/spec/h33-replay-bundle-v0.1.md">bundle spec</a> · <a href="https://github.com/H33ai/h33-replay-verifier/blob/main/spec/h33-signed-verify-report-v0.1.md">signed-report spec</a> · <a href="mailto:support@h33.ai">support@h33.ai</a>
+  h33.ai · <a href="/">home</a> · <a href="/verify-the-story/">verify-the-story</a> · <a href="/tokenize/">tokenize the world</a> · <a href="https://github.com/H33ai/h33-replay-verifier/blob/main/spec/h33-replay-bundle-v0.2.md">bundle spec v0.2</a> · <a href="https://github.com/H33ai/h33-replay-verifier/blob/main/spec/h33-signed-verify-report-v0.1.md">signed-report spec</a> · <a href="https://github.com/H33ai/h33-replay-verifier">verifier source</a> · <a href="mailto:support@h33.ai">support@h33.ai</a>
 </footer>
 
 <script type="module">
@@ -186,10 +190,16 @@ import { ml_dsa65 } from 'https://esm.sh/@noble/post-quantum@0.4.0/ml-dsa';
 const ENVELOPE_VERSION  = 'h33-signed-verify-report/0.1';
 const PAYLOAD_DOMAIN    = 'h33-signed-verify-report/0.1';
 const SIG_ALGORITHM     = 'ML-DSA-65';
-// Relative paths so the playground works identically on both
-// h33.ai/verify-the-story/playground/ and H33ai.github.io/h33-replay-verifier/playground/.
-const BUNDLE_EXAMPLE    = './fixtures/example-case-bundle.json';
-const SIGNED_EXAMPLE    = './fixtures/example-signed-report.json';
+const BUNDLE_EXAMPLE    = '/dl/h33-replay-verify/v0.2.0/example-case-bundle.json';
+const SIGNED_EXAMPLE    = '/dl/h33-replay-verify/v0.2.0/example-signed-report.json';
+
+// Query-string entry: ?bundle=<url>&from=tokenize
+// Used by the Tokenize the World demo (Scene 2 → Scene 3 hand-off).
+// `from=tokenize` switches the result rendering to the tokenization-specific
+// verification-first copy.
+const URL_PARAMS  = new URLSearchParams(window.location.search);
+const PRELOAD_URL = URL_PARAMS.get('bundle');
+const FROM_DEMO   = URL_PARAMS.get('from') === 'tokenize';
 
 const dropEl   = document.getElementById('drop');
 const fileEl   = document.getElementById('file-input');
@@ -200,6 +210,28 @@ const pasteRow = document.getElementById('paste-row');
 let wasmReady = false;
 await init();
 wasmReady = true;
+
+// Reframe the page header when arriving from /tokenize/ Scene 2.
+if (FROM_DEMO) {
+  const h1 = document.getElementById('page-h1');
+  if (h1) {
+    h1.innerHTML =
+      `<span style="display:block; font-family:'DM Mono'; font-size:13px; color:var(--copper); letter-spacing:0.12em; margin-bottom:14px; text-transform:uppercase;">Scene 3 of 3 — Tokenize the World</span>` +
+      `Independent replay.<br>Same bytes. No operator in the room.`;
+  }
+}
+
+// Auto-preload from ?bundle=<url> — fires the moment WASM is ready so the
+// page lands directly on the verifier result for the Tokenize the World
+// Scene 3 hand-off.
+if (PRELOAD_URL) {
+  try {
+    const text = await (await fetch(PRELOAD_URL)).text();
+    await dispatch(text, PRELOAD_URL.split('/').pop() || 'preloaded.json');
+  } catch (e) {
+    renderError(`Could not preload bundle from ${escape(PRELOAD_URL)}: ${escape(e.message)}`);
+  }
+}
 
 // ── file / drop wiring ───────────────────────────────────────────────────────
 dropEl.addEventListener('click', () => fileEl.click());
@@ -268,9 +300,20 @@ function verifyReplayBundle(text, parsed, name) {
   const verdict = report.passed ? 'pass' : 'fail';
   const tag = report.passed ? 'PASS' : 'FAIL';
   const verifierVer = (() => { try { return verifierVersion(); } catch { return 'unknown'; } })();
+
+  // Classify the failure for the verification-first UI banner.
+  //
+  // TODO(v0.5): when the verifier exposes a structured `failure_submode`
+  // field on CheckResult, replace this message-string matching with a
+  // direct read of that field. Pattern-matching is acceptable for the
+  // initial demo but should not become load-bearing for production UIs.
+  const classification = classifyVerifierFailure(report);
+  const demoBanner = FROM_DEMO ? renderDemoBanner(classification) : '';
+
   let html = `
+    ${demoBanner}
     <div class="verdict ${verdict}">
-      <div class="tag">${tag} — replay bundle, 10-check protocol</div>
+      <div class="tag">${tag} — replay bundle, 11-check protocol</div>
       <div class="meta">verifier ${escape(verifierVer)} · bundle ${escape(report.bundle_version)} · tenant ${escape(report.tenant_id)} · case ${escape(report.case_id)}</div>
     </div>
     <div class="checks">${renderChecks(report.checks)}</div>
@@ -278,6 +321,86 @@ function verifyReplayBundle(text, parsed, name) {
     <details><summary>Raw verifier report</summary><pre>${escape(JSON.stringify(report, null, 2))}</pre></details>
   `;
   showResult(html);
+}
+
+// Classify check #11 failures into the public taxonomy. Returns one of:
+//   { kind: 'pass' }
+//   { kind: 'temporal_violation' }
+//   { kind: 'governance_chain_omission' }
+//   { kind: 'governance_chain_tamper' }
+//   { kind: 'other_failure',  checkName, message }
+//
+// Discrimination of the chain_integrity_violation sub-cases is done by
+// keyword in the verifier-emitted message text:
+//   - "governance_chain_tips"          → omission attack (tip mismatch)
+//   - "does not recompute"             → tamper      (hash recompute failure)
+//   - "chain discontinuity"            → omission/insertion in the middle
+//
+// TODO(v0.5): swap this for a direct read of CheckResult.failure_submode
+// once the verifier exposes the structured field. Keeping the demo on
+// string matching is fine for v0.4 but the production UI contract should
+// not depend on free-form message text.
+function classifyVerifierFailure(report) {
+  if (report.passed) return { kind: 'pass' };
+  const c11 = report.checks.find(c => c.check === 'authority_temporal_validity');
+  if (!c11 || c11.passed) {
+    const failing = report.checks.find(c => !c.passed);
+    return {
+      kind: 'other_failure',
+      checkName: failing ? failing.check : 'unknown',
+      message: failing ? failing.message : 'unknown verifier failure',
+    };
+  }
+  const mode = c11.failure_mode;
+  const msg  = c11.message || '';
+  if (mode === 'temporal_violation') {
+    return { kind: 'temporal_violation', message: msg };
+  }
+  if (mode === 'chain_integrity_violation') {
+    if (msg.includes('governance_chain_tips')) {
+      return { kind: 'governance_chain_omission', message: msg };
+    }
+    if (msg.includes('does not recompute') || msg.includes('discontinuity')) {
+      return { kind: 'governance_chain_tamper', message: msg };
+    }
+    return { kind: 'governance_chain_tamper', message: msg };
+  }
+  return { kind: 'other_failure', checkName: 'authority_temporal_validity', message: msg };
+}
+
+// Render the tokenization-specific banner that sits above the per-check
+// report. Verification-first language: never "fraud proven", always
+// "replay detected" + the precise technical fact.
+function renderDemoBanner(c) {
+  if (c.kind === 'pass') {
+    return `<div class="verdict pass" style="margin-bottom:18px">
+      <div class="tag">REPLAY VERIFIED — authority chain intact, no violation detected</div>
+      <div class="meta">Independent replay reconstructed the full authority lineage and confirmed every authority-scoped action occurred while authority was in effect.</div>
+    </div>`;
+  }
+  const headline = {
+    temporal_violation:           'Replay detected: authority revoked before authorization',
+    governance_chain_omission:    'Replay detected: governance chain omission',
+    governance_chain_tamper:      'Replay detected: governance chain tamper',
+    other_failure:                'Replay detected: bundle did not verify',
+  }[c.kind] || 'Replay detected a governance violation';
+
+  const explanation = {
+    temporal_violation:
+      'The approving authority had already been revoked at the time of authorization. Production accepted the action; independent replay flagged the timing violation against the governance graph.',
+    governance_chain_omission:
+      'The governance graph backing this authorization is incomplete. A chain-tip attestation in the bundle claims more events than are actually present — a trailing event was likely removed.',
+    governance_chain_tamper:
+      'The governance graph backing this authorization has been altered. A governance event\'s chain hash does not recompute from its predecessor and receipt.',
+    other_failure:
+      'A required check failed. See per-check breakdown below.',
+  }[c.kind] || '';
+
+  return `<div class="verdict fail" style="margin-bottom:18px; padding: 22px 26px">
+    <div class="tag" style="font-size:14px">${escape(headline)}</div>
+    <div class="meta" style="margin-top:10px; line-height: 1.6">${escape(explanation)}</div>
+    <div class="meta" style="margin-top:14px; color: var(--ink-700)">verifier message: ${escape(c.message || '')}</div>
+  </div>`;
 }
 
 // ── signed report verification (pure JS) ─────────────────────────────────────
