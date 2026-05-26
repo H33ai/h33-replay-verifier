@@ -333,3 +333,165 @@ fn strict_mode_without_payloads_fails_merkle_check() {
     let (code, _stdout, _stderr) = run_verifier(&[path.to_str().unwrap(), "--strict"]);
     assert_eq!(code, 1, "strict mode with missing payloads should FAIL, got {}", code);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v0.2 — Tokenize the World demo bundles
+//
+// The four scenarios that drive the public demo's emotional payload:
+//   - happy:    action BEFORE revocation, chain intact, tip matches → PASS
+//   - temporal: action AFTER revocation                              → FAIL temporal_violation
+//   - omission: revocation event removed (tip no longer matches)     → FAIL chain_integrity_violation
+//   - tamper:   this_event_hash_hex rewritten                        → FAIL chain_integrity_violation
+//
+// Each test asserts exit code AND the failure_mode tag so the demo UI can
+// render distinct error messaging per fraud class.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_fixture(name: &str) -> PathBuf {
+    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.push("..");
+    p.push("..");
+    p.push("fixtures");
+    p.push(name);
+    p
+}
+
+fn run_and_parse(args: &[&str]) -> (i32, serde_json::Value) {
+    let (code, stdout, _) = run_verifier(args);
+    let report: serde_json::Value =
+        serde_json::from_str(&stdout).expect("verifier stdout is JSON");
+    (code, report)
+}
+
+fn check_11<'a>(report: &'a serde_json::Value) -> &'a serde_json::Value {
+    report["checks"]
+        .as_array()
+        .expect("checks array")
+        .iter()
+        .find(|c| c["check"] == "authority_temporal_validity")
+        .expect("check #11 present in report")
+}
+
+#[test]
+fn v0_2_happy_bundle_passes_all_eleven_checks() {
+    let fx = demo_fixture("tokenize-the-world-happy-bundle-v0.2.json");
+    assert!(fx.exists(), "happy fixture missing: {}", fx.display());
+
+    let (code, report) = run_and_parse(&[fx.to_str().unwrap()]);
+    assert_eq!(code, 0, "happy v0.2 bundle must PASS, got exit {}", code);
+    assert_eq!(report["passed"], serde_json::Value::Bool(true));
+    assert_eq!(report["bundle_version"], "0.2");
+
+    let c11 = check_11(&report);
+    assert_eq!(c11["passed"], serde_json::Value::Bool(true));
+    assert!(
+        c11["failure_mode"].is_null(),
+        "happy bundle must not set failure_mode; got {}",
+        c11["failure_mode"]
+    );
+}
+
+#[test]
+fn v0_2_fraud_temporal_violation_caught_with_correct_failure_mode() {
+    let fx = demo_fixture("tokenize-the-world-fraud-bundle-v0.2.json");
+    assert!(fx.exists(), "fraud fixture missing: {}", fx.display());
+
+    let (code, report) = run_and_parse(&[fx.to_str().unwrap()]);
+    assert_eq!(code, 1, "temporal fraud must FAIL, got exit {}", code);
+    assert_eq!(report["passed"], serde_json::Value::Bool(false));
+
+    let c11 = check_11(&report);
+    assert_eq!(c11["passed"], serde_json::Value::Bool(false));
+    assert_eq!(
+        c11["failure_mode"], "temporal_violation",
+        "temporal fraud must tag failure_mode='temporal_violation', got {}",
+        c11["failure_mode"]
+    );
+    let msg = c11["message"].as_str().unwrap();
+    assert!(
+        msg.contains("AFTER authority was revoked"),
+        "temporal failure message must clearly describe the post-revocation use: {}",
+        msg
+    );
+
+    // All OTHER checks must still PASS — only #11 fails. This is what makes
+    // the demo land: the bundle looks structurally valid; only replay catches
+    // the timing fraud.
+    for c in report["checks"].as_array().unwrap() {
+        if c["check"] != "authority_temporal_validity" {
+            assert_eq!(
+                c["passed"], serde_json::Value::Bool(true),
+                "temporal fraud must not also break check {:?}: {}",
+                c["check"], c["message"]
+            );
+        }
+    }
+}
+
+#[test]
+fn v0_2_fraud_omission_caught_by_chain_tip_integrity() {
+    // Attack: take the happy bundle, remove the revocation event. The
+    // remaining chain (just delegation) is internally valid by itself, so
+    // chain-hash recompute passes. The chain_tip attestation is what
+    // catches the omission — its claimed terminal hash + event_count no
+    // longer match the reconstructed chain.
+    let happy = demo_fixture("tokenize-the-world-happy-bundle-v0.2.json");
+    let mut bundle: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&happy).unwrap()).unwrap();
+    let events: Vec<serde_json::Value> = bundle["governance_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["event_kind"] != "authority_revocation")
+        .cloned()
+        .collect();
+    bundle["governance_events"] = serde_json::Value::Array(events);
+
+    let path = std::env::temp_dir().join("h33-demo-omission-attack.json");
+    std::fs::write(&path, bundle.to_string()).unwrap();
+
+    let (code, report) = run_and_parse(&[path.to_str().unwrap()]);
+    assert_eq!(code, 1, "omission attack must FAIL, got exit {}", code);
+
+    let c11 = check_11(&report);
+    assert_eq!(c11["failure_mode"], "chain_integrity_violation",
+        "omission must tag chain_integrity_violation; got {}", c11["failure_mode"]);
+    let msg = c11["message"].as_str().unwrap();
+    assert!(
+        msg.contains("governance_chain_tips"),
+        "omission failure must reference chain-tip mismatch: {}",
+        msg
+    );
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn v0_2_fraud_chain_tamper_caught_by_hash_recompute() {
+    // Attack: take the happy bundle, rewrite the revocation event's
+    // this_event_hash_hex to a bogus value. Hash-recompute catches the
+    // discrepancy regardless of the chain_tip attestation.
+    let happy = demo_fixture("tokenize-the-world-happy-bundle-v0.2.json");
+    let mut bundle: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&happy).unwrap()).unwrap();
+    bundle["governance_events"][1]["this_event_hash_hex"] =
+        serde_json::Value::String("00".repeat(32));
+
+    let path = std::env::temp_dir().join("h33-demo-tamper-attack.json");
+    std::fs::write(&path, bundle.to_string()).unwrap();
+
+    let (code, report) = run_and_parse(&[path.to_str().unwrap()]);
+    assert_eq!(code, 1, "tamper attack must FAIL, got exit {}", code);
+
+    let c11 = check_11(&report);
+    assert_eq!(c11["failure_mode"], "chain_integrity_violation",
+        "tamper must tag chain_integrity_violation; got {}", c11["failure_mode"]);
+    let msg = c11["message"].as_str().unwrap();
+    assert!(
+        msg.contains("does not recompute from prior+receipt"),
+        "tamper failure must reference hash recompute: {}",
+        msg
+    );
+
+    std::fs::remove_file(&path).ok();
+}

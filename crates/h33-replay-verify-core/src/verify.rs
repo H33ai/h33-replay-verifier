@@ -11,14 +11,15 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::binding::{compute_verification_hash, ActorRef, BindingContext};
-use crate::bundle::{schema_hash, ReplayBundle, TimelineEntry};
+use crate::bundle::{schema_hash_for_version, GovernanceEvent, ReplayBundle, TimelineEntry};
 use crate::chain::compute_chain_hash;
 
-/// Supported bundle version majors. Verifier rejects unknown majors.
-const SUPPORTED_VERSIONS: &[&str] = &["0.1"];
+/// Supported bundle version majors. Verifier accepts both v0.1 and v0.2.
+/// v0.1 bundles have no `governance_events` → check #11 is N/A.
+const SUPPORTED_VERSIONS: &[&str] = &["0.1", "0.2"];
 
 /// This verifier's own version. Compared against bundle's verifier_min_version.
-pub const VERIFIER_VERSION: &str = "0.2.0";
+pub const VERIFIER_VERSION: &str = "0.4.0";
 
 /// Known verifier artifact registry — only refs starting with these prefixes
 /// are recognized at v0.1. Unknown refs trigger check #8 failure (or warning
@@ -43,6 +44,7 @@ pub enum CheckId {
     HashAlgorithmsKnown,   // #8
     SameScopeIsolation,    // #9
     SubstrateBindings,     // #10
+    AuthorityTemporalValidity, // #11  — v0.2+ governance graph check
 }
 
 impl CheckId {
@@ -58,6 +60,7 @@ impl CheckId {
             CheckId::HashAlgorithmsKnown => "hash_algorithms_known",
             CheckId::SameScopeIsolation => "same_scope_isolation",
             CheckId::SubstrateBindings => "substrate_bindings",
+            CheckId::AuthorityTemporalValidity => "authority_temporal_validity",
         }
     }
 }
@@ -68,6 +71,15 @@ pub struct CheckResult {
     pub passed: bool,
     /// If passed = false: the reason. If passed = true and strict matters: notes.
     pub message: String,
+    /// Optional failure-mode tag (v0.4+). For check #11 the well-known values are:
+    ///   - `"temporal_violation"`        — authority was revoked before action time
+    ///   - `"chain_integrity_violation"` — governance chain hash recompute failed,
+    ///                                      predecessor pointer mismatch, tip
+    ///                                      attestation mismatch, or chain
+    ///                                      discontinuity (omission)
+    /// Other checks may grow their own failure_mode taxonomy. None when passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_mode: Option<String>,
     /// Number of items examined (timeline entries, frames, bindings, etc.).
     pub examined: usize,
 }
@@ -118,7 +130,7 @@ pub fn verify(bundle: &ReplayBundle, opts: VerifyOptions<'_>) -> VerifyReport {
     let major = bundle.version.split('.').next().unwrap_or("");
     let version_ok = SUPPORTED_VERSIONS.iter().any(|v| v.starts_with(&format!("{major}.")));
     let m = &bundle.export_metadata;
-    let expected_hash = schema_hash();
+    let expected_hash = schema_hash_for_version(&bundle.version);
     let schema_ok = m.schema_hash == expected_hash;
     let bundle_version_ok = m.bundle_version == bundle.version;
     let case_ok = m.case_id == bundle.case_id;
@@ -212,12 +224,40 @@ pub fn verify(bundle: &ReplayBundle, opts: VerifyOptions<'_>) -> VerifyReport {
         r10.unwrap_or_else(|| format!("{} bindings recompute correctly", bundle.substrate_bindings.len())),
         bundle.substrate_bindings.len());
 
+    // Check 11 — authority temporal validity (v0.2+ governance graph).
+    // For each action with requires_authority_scope set, the latest
+    // governance event for (subject, scope) with effective_at <= action.timestamp
+    // must be an authority_delegation (not authority_revocation or absent).
+    // Also recompute the governance event chain hashes + tip attestations
+    // to catch tampering and omission, with distinct failure_mode tags.
+    let r11 = check_authority_temporal_validity(bundle, opts);
+    let r11_passed = r11.err.is_none();
+    record_with_mode(
+        &mut report,
+        CheckId::AuthorityTemporalValidity,
+        r11_passed,
+        r11.err.unwrap_or(r11.ok_msg),
+        r11.examined,
+        r11.failure_mode,
+    );
+
     report
 }
 
 fn record(report: &mut VerifyReport, check: CheckId, passed: bool, message: String, examined: usize) {
+    record_with_mode(report, check, passed, message, examined, None);
+}
+
+fn record_with_mode(
+    report: &mut VerifyReport,
+    check: CheckId,
+    passed: bool,
+    message: String,
+    examined: usize,
+    failure_mode: Option<String>,
+) {
     if !passed { report.passed = false; }
-    report.checks.push(CheckResult { check, passed, message, examined });
+    report.checks.push(CheckResult { check, passed, message, failure_mode, examined });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -543,4 +583,400 @@ fn semver_at_least(actual: &str, required: &str) -> bool {
     let Some(a) = parse(actual) else { return false; };
     let Some(r) = parse(required) else { return false; };
     a >= r
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Check #11 — authority_temporal_validity
+//
+// Verify that every action depending on a delegated authority scope was
+// performed while that authority was in effect. State-machine rule:
+//
+//   For each action A with requires_authority_scope = S, by subject X
+//   (agent_id_hex if action.agent_id_hex.is_some(), else N/A — actions
+//   on humans aren't modeled in v0.2 timeline entries):
+//
+//     1. Filter governance_events to entries where (subject, scope) == (X, S)
+//        and effective_at <= action.timestamp.
+//     2. Sort by effective_at ascending.
+//     3. Take the LAST entry (latest effective at or before action.timestamp):
+//        - none      → FAIL: no authority existed at action time
+//        - delegation → PASS
+//        - revocation → FAIL: authority had been revoked
+//
+// This is a "current state at action time" rule, not a "window" rule —
+// what matters is the most recent effective state. Revocation followed by
+// re-delegation reinstates authority for subsequent actions.
+//
+// In strict mode, an action with requires_authority_scope set but NO
+// governance_events anywhere in the bundle is treated as FAIL (defense in
+// depth: claimed authority requires an audit trail). In non-strict mode it
+// is treated as a warning recorded under the check's PASS message.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Result of check #11. The `err`-Some + `failure_mode`-Some path distinguishes
+/// the two demo-critical failure classes:
+///   - `"temporal_violation"`        — revocation in effect at action time
+///   - `"chain_integrity_violation"` — graph tamper / hash mismatch / omission
+struct Check11Result {
+    /// Some when the check failed; None when passed.
+    err: Option<String>,
+    /// PASS message (used when err is None).
+    ok_msg: String,
+    /// How many items the check inspected.
+    examined: usize,
+    /// Set iff the check failed; categorizes the failure for the UI/replay.
+    failure_mode: Option<String>,
+}
+
+impl Check11Result {
+    fn pass(ok_msg: String, examined: usize) -> Self {
+        Self { err: None, ok_msg, examined, failure_mode: None }
+    }
+    fn fail_temporal(msg: String, examined: usize) -> Self {
+        Self {
+            err: Some(msg),
+            ok_msg: String::new(),
+            examined,
+            failure_mode: Some("temporal_violation".into()),
+        }
+    }
+    fn fail_integrity(msg: String, examined: usize) -> Self {
+        Self {
+            err: Some(msg),
+            ok_msg: String::new(),
+            examined,
+            failure_mode: Some("chain_integrity_violation".into()),
+        }
+    }
+}
+
+/// Group key for governance chains: (subject_actor_id_hex OR subject_human_id_uuid, scope).
+type ChainKey = (String, String);
+
+fn governance_chain_key(ge: &GovernanceEvent) -> ChainKey {
+    let subject = ge
+        .subject_actor_id_hex
+        .clone()
+        .unwrap_or_else(|| ge.subject_human_id.map(|u| u.to_string()).unwrap_or_default());
+    (subject, ge.authority_scope.clone())
+}
+
+fn tip_chain_key(tip: &crate::bundle::GovernanceChainTip) -> ChainKey {
+    let subject = tip
+        .subject_actor_id_hex
+        .clone()
+        .unwrap_or_else(|| tip.subject_human_id.map(|u| u.to_string()).unwrap_or_default());
+    (subject, tip.authority_scope.clone())
+}
+
+fn check_authority_temporal_validity(
+    bundle: &ReplayBundle,
+    opts: VerifyOptions<'_>,
+) -> Check11Result {
+    // ── PHASE 1: authority_state_after self-consistency ──────────────────
+    // If a governance event declares authority_state_after, it must agree
+    // with the event_kind. Classified as chain_integrity_violation.
+    for ge in &bundle.governance_events {
+        if let Some(ref stated) = ge.authority_state_after {
+            let derived = match ge.event_kind.as_str() {
+                "authority_delegation" => "delegated",
+                "authority_revocation" => "revoked",
+                _ => "?",
+            };
+            if stated != derived {
+                return Check11Result::fail_integrity(
+                    format!(
+                        "governance_event {} declares authority_state_after='{}' but \
+                         event_kind='{}' implies '{}'",
+                        ge.event_id, stated, ge.event_kind, derived
+                    ),
+                    bundle.governance_events.len(),
+                );
+            }
+        }
+        // Subject must be exactly one of agent / human.
+        match (ge.subject_actor_id_hex.is_some(), ge.subject_human_id.is_some()) {
+            (true, false) | (false, true) => {}
+            (false, false) => {
+                return Check11Result::fail_integrity(
+                    format!(
+                        "governance_event {} has no subject (neither subject_actor_id_hex nor subject_human_id set)",
+                        ge.event_id
+                    ),
+                    bundle.governance_events.len(),
+                );
+            }
+            (true, true) => {
+                return Check11Result::fail_integrity(
+                    format!(
+                        "governance_event {} sets both subject_actor_id_hex AND subject_human_id; exactly one MUST be set",
+                        ge.event_id
+                    ),
+                    bundle.governance_events.len(),
+                );
+            }
+        }
+    }
+
+    // ── PHASE 2: chain hash recompute per (subject, scope) ───────────────
+    // Group events by chain key, sort within group by effective_at, walk
+    // each chain verifying:
+    //   - first event: prior_event_hash_hex MUST be absent
+    //   - subsequent: prior_event_hash_hex MUST equal previous event's
+    //                 this_event_hash_hex
+    //   - this_event_hash_hex MUST equal SHA3-256(prior || receipt)
+    let mut chains: HashMap<ChainKey, Vec<&GovernanceEvent>> = HashMap::new();
+    for ge in &bundle.governance_events {
+        chains.entry(governance_chain_key(ge)).or_default().push(ge);
+    }
+    for (key, events) in chains.iter_mut() {
+        events.sort_by(|a, b| a.effective_at.cmp(&b.effective_at));
+        let mut prior_hex: Option<String> = None;
+        for (i, ge) in events.iter().enumerate() {
+            // (a) first event's prior_event_hash_hex MUST be None.
+            if i == 0 {
+                if ge.prior_event_hash_hex.is_some() {
+                    return Check11Result::fail_integrity(
+                        format!(
+                            "governance chain ({}, {}) first event {} sets prior_event_hash_hex \
+                             but the first event in a chain MUST omit it",
+                            key.0, key.1, ge.event_id
+                        ),
+                        bundle.governance_events.len(),
+                    );
+                }
+            } else {
+                // (b) prior_event_hash_hex MUST link to previous event.
+                let stated_prior = ge.prior_event_hash_hex.as_deref().unwrap_or("");
+                let expected_prior = prior_hex.as_deref().unwrap_or("");
+                if stated_prior != expected_prior {
+                    return Check11Result::fail_integrity(
+                        format!(
+                            "governance chain ({}, {}) event {} prior_event_hash_hex={} \
+                             does not match preceding event's this_event_hash_hex={} \
+                             (chain discontinuity — event may have been inserted, removed, or reordered)",
+                            key.0, key.1, ge.event_id, stated_prior, expected_prior
+                        ),
+                        bundle.governance_events.len(),
+                    );
+                }
+            }
+            // (c) recompute this_event_hash_hex.
+            let receipt_bytes = match hex::decode(&ge.receipt_hex) {
+                Ok(b) if b.len() == 74 => b,
+                Ok(_) | Err(_) => {
+                    return Check11Result::fail_integrity(
+                        format!(
+                            "governance_event {} receipt_hex is not a valid 74-byte hex string",
+                            ge.event_id
+                        ),
+                        bundle.governance_events.len(),
+                    );
+                }
+            };
+            let prior_bytes: Option<[u8; 32]> = match ge.prior_event_hash_hex.as_deref() {
+                None => None,
+                Some(h) => match hex::decode(h) {
+                    Ok(b) if b.len() == 32 => {
+                        let mut a = [0u8; 32];
+                        a.copy_from_slice(&b);
+                        Some(a)
+                    }
+                    _ => {
+                        return Check11Result::fail_integrity(
+                            format!(
+                                "governance_event {} prior_event_hash_hex is not a valid 32-byte hex string",
+                                ge.event_id
+                            ),
+                            bundle.governance_events.len(),
+                        );
+                    }
+                },
+            };
+            let receipt_arr: [u8; 74] = receipt_bytes.as_slice().try_into().unwrap();
+            let recomputed = compute_chain_hash(prior_bytes, &receipt_arr);
+            let recomputed_hex = hex::encode(recomputed);
+            if recomputed_hex != ge.this_event_hash_hex {
+                return Check11Result::fail_integrity(
+                    format!(
+                        "governance_event {} this_event_hash_hex={} does not recompute from prior+receipt (got {})",
+                        ge.event_id, ge.this_event_hash_hex, recomputed_hex
+                    ),
+                    bundle.governance_events.len(),
+                );
+            }
+            prior_hex = Some(ge.this_event_hash_hex.clone());
+        }
+    }
+
+    // ── PHASE 3: chain tip attestation integrity ─────────────────────────
+    // If governance_chain_tips is non-empty, each tip MUST match a chain
+    // we just reconstructed — same terminal hash AND same event count.
+    // This closes the "remove the trailing revocation" omission attack.
+    for tip in &bundle.governance_chain_tips {
+        let key = tip_chain_key(tip);
+        match chains.get(&key) {
+            None => {
+                return Check11Result::fail_integrity(
+                    format!(
+                        "governance_chain_tips entry for (subject={}, scope={}) references a chain \
+                         with no events — likely all events were removed; tip claims terminal={} count={}",
+                        key.0, key.1, tip.terminal_event_hash_hex, tip.event_count
+                    ),
+                    bundle.governance_events.len(),
+                );
+            }
+            Some(events) => {
+                let actual_terminal = events.last().map(|e| &e.this_event_hash_hex);
+                let actual_count = events.len() as u32;
+                if actual_terminal != Some(&tip.terminal_event_hash_hex) {
+                    return Check11Result::fail_integrity(
+                        format!(
+                            "governance_chain_tips entry (subject={}, scope={}) claims terminal_event_hash_hex={} \
+                             but reconstructed chain ends at {} \
+                             (a trailing event was likely removed)",
+                            key.0,
+                            key.1,
+                            tip.terminal_event_hash_hex,
+                            actual_terminal.map(|s| s.as_str()).unwrap_or("<empty>")
+                        ),
+                        bundle.governance_events.len(),
+                    );
+                }
+                if actual_count != tip.event_count {
+                    return Check11Result::fail_integrity(
+                        format!(
+                            "governance_chain_tips entry (subject={}, scope={}) claims event_count={} \
+                             but reconstructed chain has {} event(s)",
+                            key.0, key.1, tip.event_count, actual_count
+                        ),
+                        bundle.governance_events.len(),
+                    );
+                }
+            }
+        }
+    }
+
+    // ── PHASE 4: temporal validity of authority-scoped actions ───────────
+    let scoped_actions: Vec<&TimelineEntry> = bundle
+        .timeline
+        .entries
+        .iter()
+        .filter(|e| e.event_kind == "action" && e.requires_authority_scope.is_some())
+        .collect();
+
+    if scoped_actions.is_empty() {
+        let msg = if bundle.governance_events.is_empty() {
+            "no authority-scoped actions; governance graph empty".to_string()
+        } else {
+            format!(
+                "no authority-scoped actions; governance graph has {} event(s) (chain integrity OK)",
+                bundle.governance_events.len()
+            )
+        };
+        return Check11Result::pass(msg, bundle.governance_events.len());
+    }
+
+    if bundle.governance_events.is_empty() {
+        if opts.strict {
+            return Check11Result::fail_integrity(
+                format!(
+                    "{} action(s) declare requires_authority_scope but governance_events is empty \
+                     (strict mode requires an audit trail for any claimed authority)",
+                    scoped_actions.len()
+                ),
+                scoped_actions.len(),
+            );
+        } else {
+            return Check11Result::pass(
+                format!(
+                    "WARN: {} action(s) declare requires_authority_scope but governance_events is empty \
+                     (non-strict mode: passing; re-run with --strict to fail)",
+                    scoped_actions.len()
+                ),
+                scoped_actions.len(),
+            );
+        }
+    }
+
+    // Walk each authority-scoped action and evaluate the state machine.
+    for action in &scoped_actions {
+        let action_subject: Option<&str> = action.agent_id_hex.as_deref();
+        if action_subject.is_none() {
+            return Check11Result::fail_integrity(
+                format!(
+                    "action {} declares requires_authority_scope but has no agent_id_hex \
+                     (v0.2 governance graph requires an agent subject)",
+                    action.event_id
+                ),
+                scoped_actions.len(),
+            );
+        }
+        let scope = action.requires_authority_scope.as_deref().unwrap();
+        let action_ts = &action.timestamp;
+
+        let mut candidates: Vec<&GovernanceEvent> = bundle
+            .governance_events
+            .iter()
+            .filter(|ge| {
+                ge.authority_scope == scope
+                    && ge.subject_actor_id_hex.as_deref() == action_subject
+                    && ge.effective_at.as_str() <= action_ts.as_str()
+            })
+            .collect();
+        candidates.sort_by(|a, b| a.effective_at.cmp(&b.effective_at));
+
+        match candidates.last() {
+            None => {
+                return Check11Result::fail_temporal(
+                    format!(
+                        "action {} at {} by actor {} requires authority scope '{}' \
+                         but no governance event for that subject+scope exists at or before action time",
+                        action.event_id,
+                        action_ts,
+                        action_subject.unwrap(),
+                        scope
+                    ),
+                    scoped_actions.len(),
+                );
+            }
+            Some(ge) if ge.event_kind == "authority_delegation" => {
+                // PASS for this action; continue.
+            }
+            Some(ge) if ge.event_kind == "authority_revocation" => {
+                return Check11Result::fail_temporal(
+                    format!(
+                        "action {} at {} by actor {} used scope '{}' AFTER authority was revoked at {} \
+                         (governance event {})",
+                        action.event_id,
+                        action_ts,
+                        action_subject.unwrap(),
+                        scope,
+                        ge.effective_at,
+                        ge.event_id
+                    ),
+                    scoped_actions.len(),
+                );
+            }
+            Some(ge) => {
+                return Check11Result::fail_integrity(
+                    format!(
+                        "action {} references governance event {} with unrecognized event_kind '{}'",
+                        action.event_id, ge.event_id, ge.event_kind
+                    ),
+                    scoped_actions.len(),
+                );
+            }
+        }
+    }
+
+    Check11Result::pass(
+        format!(
+            "all {} authority-scoped action(s) had effective authority at action time; \
+             {} governance event(s) chain integrity verified",
+            scoped_actions.len(),
+            bundle.governance_events.len()
+        ),
+        scoped_actions.len(),
+    )
 }

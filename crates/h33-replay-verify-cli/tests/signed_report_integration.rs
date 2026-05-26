@@ -50,7 +50,7 @@ fn real_fixture_passes_then_signs_then_round_trip_verifies() {
     assert_eq!(payload.domain, SIGNED_PAYLOAD_DOMAIN);
     assert!(payload.passed);
     assert_eq!(payload.bundle_sha3_256_hex, sha3_256_hex(&bytes));
-    assert_eq!(payload.checks.len(), 10);
+    assert_eq!(payload.checks.len(), 11);
 }
 
 #[test]
