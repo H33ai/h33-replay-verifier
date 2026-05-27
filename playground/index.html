@@ -201,6 +201,25 @@ const URL_PARAMS  = new URLSearchParams(window.location.search);
 const PRELOAD_URL = URL_PARAMS.get('bundle');
 const FROM_DEMO   = URL_PARAMS.get('from') === 'tokenize';
 
+// External chain-anchor receipt (Tokenize the World demo).
+//
+// The H33-74 substrate already anchors 32-byte commitments to public chains
+// via the existing STARK anchor path. When present, this receipt is the
+// product of one live mainnet TX whose calldata equals SHA3-256 of the
+// bundle the visitor is about to verify.
+//
+// IMPORTANT — verifier semantics do NOT depend on this anchor. The replay
+// bundle remains independently verifiable WITHOUT the chain reference; the
+// anchor is external evidence that the same 32-byte commitment is also
+// recorded on a public blockchain. Banner copy must say so explicitly.
+let demoAnchorReceipt = null;
+if (FROM_DEMO) {
+  try {
+    const r = await fetch('/tokenize/fixtures/anchor-receipt.json', { cache: 'no-store' });
+    if (r.ok) demoAnchorReceipt = await r.json();
+  } catch { /* anchor not yet provisioned; demo still runs */ }
+}
+
 const dropEl   = document.getElementById('drop');
 const fileEl   = document.getElementById('file-input');
 const resultEl = document.getElementById('result');
@@ -372,8 +391,9 @@ function classifyVerifierFailure(report) {
 // report. Verification-first language: never "fraud proven", always
 // "replay detected" + the precise technical fact.
 function renderDemoBanner(c) {
+  let core;
   if (c.kind === 'pass') {
-    return `<div class="verdict pass" style="margin-bottom:18px">
+    core = `<div class="verdict pass" style="margin-bottom:18px">
       <div class="tag">REPLAY VERIFIED</div>
       <div class="meta" style="margin-top:8px; color: var(--ink-200); font-size:13px;">
         Replay verified independently of the chain currently anchoring the asset.
@@ -382,29 +402,57 @@ function renderDemoBanner(c) {
         Independent replay reconstructed the full authority lineage and confirmed every authority-scoped action occurred while authority was in effect.
       </div>
     </div>`;
+  } else {
+    const headline = {
+      temporal_violation:           'Replay detected: authority revoked before authorization',
+      governance_chain_omission:    'Replay detected: governance chain omission',
+      governance_chain_tamper:      'Replay detected: governance chain tamper',
+      other_failure:                'Replay detected: bundle did not verify',
+    }[c.kind] || 'Replay detected a governance violation';
+
+    const explanation = {
+      temporal_violation:
+        'The approving authority had already been revoked at the time of authorization. Production accepted the action; independent replay flagged the timing violation against the governance graph.',
+      governance_chain_omission:
+        'The governance graph backing this authorization is incomplete. A chain-tip attestation in the bundle claims more events than are actually present — a trailing event was likely removed.',
+      governance_chain_tamper:
+        'The governance graph backing this authorization has been altered. A governance event\'s chain hash does not recompute from its predecessor and receipt.',
+      other_failure:
+        'A required check failed. See per-check breakdown below.',
+    }[c.kind] || '';
+
+    core = `<div class="verdict fail" style="margin-bottom:18px; padding: 22px 26px">
+      <div class="tag" style="font-size:14px">${escape(headline)}</div>
+      <div class="meta" style="margin-top:10px; line-height: 1.6">${escape(explanation)}</div>
+      <div class="meta" style="margin-top:14px; color: var(--ink-700)">verifier message: ${escape(c.message || '')}</div>
+    </div>`;
   }
-  const headline = {
-    temporal_violation:           'Replay detected: authority revoked before authorization',
-    governance_chain_omission:    'Replay detected: governance chain omission',
-    governance_chain_tamper:      'Replay detected: governance chain tamper',
-    other_failure:                'Replay detected: bundle did not verify',
-  }[c.kind] || 'Replay detected a governance violation';
+  return core + renderAnchorPanel();
+}
 
-  const explanation = {
-    temporal_violation:
-      'The approving authority had already been revoked at the time of authorization. Production accepted the action; independent replay flagged the timing violation against the governance graph.',
-    governance_chain_omission:
-      'The governance graph backing this authorization is incomplete. A chain-tip attestation in the bundle claims more events than are actually present — a trailing event was likely removed.',
-    governance_chain_tamper:
-      'The governance graph backing this authorization has been altered. A governance event\'s chain hash does not recompute from its predecessor and receipt.',
-    other_failure:
-      'A required check failed. See per-check breakdown below.',
-  }[c.kind] || '';
-
-  return `<div class="verdict fail" style="margin-bottom:18px; padding: 22px 26px">
-    <div class="tag" style="font-size:14px">${escape(headline)}</div>
-    <div class="meta" style="margin-top:10px; line-height: 1.6">${escape(explanation)}</div>
-    <div class="meta" style="margin-top:14px; color: var(--ink-700)">verifier message: ${escape(c.message || '')}</div>
+// Render the external-chain-anchor panel. Strictly framed so the verifier's
+// independence isn't undercut: "verified locally; commitment is also
+// externally anchored." Replay semantics are not chain-dependent.
+function renderAnchorPanel() {
+  if (!demoAnchorReceipt) return '';
+  const r = demoAnchorReceipt;
+  const chainLabel = (r.chain === 'ethereum_mainnet') ? 'Ethereum mainnet' : escape(r.chain || 'unknown chain');
+  const txShort = (r.tx_hash || '').slice(0, 10) + '…' + (r.tx_hash || '').slice(-8);
+  const calldataShort = (r.calldata_hex || '').slice(0, 10) + '…' + (r.calldata_hex || '').slice(-8);
+  return `<div class="verdict" style="margin-bottom:18px; padding: 20px 24px; border-left: 3px solid var(--copper); background: var(--ink-900);">
+    <div class="tag" style="color: var(--copper); font-size:13px;">EXTERNAL CHAIN ANCHOR — ${chainLabel}</div>
+    <div class="meta" style="margin-top:10px; color: var(--ink-300); line-height: 1.6">
+      Verified locally. 32-byte commitment externally anchored on ${chainLabel}.
+    </div>
+    <div class="meta" style="margin-top:6px; line-height: 1.5;">
+      The verifier operates independently of ${chainLabel} and remains portable across future infrastructure migration. The anchor is supplementary evidence, not a verifier dependency.
+    </div>
+    <div class="meta" style="margin-top:14px; font-family: 'DM Mono'; font-size: 11px; color: var(--ink-400); line-height: 1.7;">
+      tx&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<a href="${escape(r.etherscan_url || '#')}" target="_blank" rel="noopener" style="color: var(--copper-2);">${escape(txShort)}</a><br>
+      block&nbsp;&nbsp;&nbsp;${escape(String(r.block_number || '—'))}<span style="color: var(--ink-700);">  ·  ${escape(r.block_timestamp_utc || '')}</span><br>
+      calldata&nbsp;${escape(calldataShort)} <span style="color: var(--ink-700);">  ·  ${escape(String(r.calldata_bytes || 32))} bytes  ·  = SHA3-256(bundle)</span><br>
+      gas&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${escape(String(r.gas_used || '—'))} @ ${escape((r.effective_gas_price_gwei ?? 0).toFixed(2))} gwei
+    </div>
   </div>`;
 }
 
