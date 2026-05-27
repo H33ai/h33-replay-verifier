@@ -176,7 +176,7 @@
 </main>
 
 <div id="closing-line" style="font-family: 'DM Sans'; font-size: 14px; color: var(--ink-400); font-style: italic; margin: 56px 0 8px; max-width: 720px;">
-  Tokenized assets should not require trust in the original operator to remain verifiable.
+  The verification layer should survive chain migrations, vendor changes, operator failure, and future infrastructure shifts.
 </div>
 
 <footer>
@@ -374,8 +374,13 @@ function classifyVerifierFailure(report) {
 function renderDemoBanner(c) {
   if (c.kind === 'pass') {
     return `<div class="verdict pass" style="margin-bottom:18px">
-      <div class="tag">REPLAY VERIFIED — authority chain intact, no violation detected</div>
-      <div class="meta">Independent replay reconstructed the full authority lineage and confirmed every authority-scoped action occurred while authority was in effect.</div>
+      <div class="tag">REPLAY VERIFIED</div>
+      <div class="meta" style="margin-top:8px; color: var(--ink-200); font-size:13px;">
+        Replay verified independently of the chain currently anchoring the asset.
+      </div>
+      <div class="meta" style="margin-top:8px;">
+        Independent replay reconstructed the full authority lineage and confirmed every authority-scoped action occurred while authority was in effect.
+      </div>
     </div>`;
   }
   const headline = {
