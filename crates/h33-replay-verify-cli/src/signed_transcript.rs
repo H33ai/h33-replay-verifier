@@ -341,6 +341,7 @@ mod tests {
                 check: CheckId::SchemaParse,
                 passed: true,
                 message: "ok".to_string(),
+                failure_mode: None,
                 examined: 1,
             }],
             warnings: vec![],

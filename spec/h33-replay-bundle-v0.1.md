@@ -1,5 +1,7 @@
 # H33 Replay Bundle — v0.1
 
+> **Superseded by [`h33-replay-bundle-v0.2.md`](h33-replay-bundle-v0.2.md) for governance-event and authority-temporal-validity support.** This document remains frozen as the canonical v0.1 reference. v0.1 bundles continue to verify under the v0.4.0+ verifier; new bundles SHOULD use v0.2.
+
 **Status:** v0.1 frozen 2026-05-26
 **Reference verifier:** `h33-replay-verify` (`src/bin/h33_replay_verify.rs`)
 **Wire schema:** `src/replay/bundle.rs` (`ReplayBundle`)
