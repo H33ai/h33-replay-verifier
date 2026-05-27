@@ -387,13 +387,28 @@ function classifyVerifierFailure(report) {
   return { kind: 'other_failure', checkName: 'authority_temporal_validity', message: msg };
 }
 
-// Render the tokenization-specific banner that sits above the per-check
-// report. Verification-first language: never "fraud proven", always
-// "replay detected" + the precise technical fact.
+// Render the tokenization-specific banner stack. Two visually-distinct
+// panels with parallel labels, in order of importance:
+//
+//   1. LOCAL REPLAY VERIFICATION   — the verifier validates the governance.
+//   2. PUBLIC CHAIN ANCHOR         — the chain timestamps the commitment.
+//
+// The replay panel is always present. The anchor panel only renders when
+// a receipt is available. Replay is the load-bearing claim; the anchor is
+// supplementary evidence of external timestamped existence.
+//
+// Verification-first language: never "fraud proven", "verified by
+// Ethereum", or "secured by Ethereum". Always "replay detected" /
+// "verified locally" / "externally anchored on".
 function renderDemoBanner(c) {
   let core;
+  const sectionLabel = `
+    <div class="meta" style="font-family: 'DM Mono'; font-size: 10px; letter-spacing: 0.14em; color: var(--ink-700); margin-bottom: 6px; text-transform: uppercase;">
+      1 of 2 &nbsp;·&nbsp; LOCAL REPLAY VERIFICATION
+    </div>`;
+
   if (c.kind === 'pass') {
-    core = `<div class="verdict pass" style="margin-bottom:18px">
+    core = `${sectionLabel}<div class="verdict pass" style="margin-bottom:24px">
       <div class="tag">REPLAY VERIFIED</div>
       <div class="meta" style="margin-top:8px; color: var(--ink-200); font-size:13px;">
         Replay verified independently of the chain currently anchoring the asset.
@@ -421,7 +436,7 @@ function renderDemoBanner(c) {
         'A required check failed. See per-check breakdown below.',
     }[c.kind] || '';
 
-    core = `<div class="verdict fail" style="margin-bottom:18px; padding: 22px 26px">
+    core = `${sectionLabel}<div class="verdict fail" style="margin-bottom:24px; padding: 22px 26px">
       <div class="tag" style="font-size:14px">${escape(headline)}</div>
       <div class="meta" style="margin-top:10px; line-height: 1.6">${escape(explanation)}</div>
       <div class="meta" style="margin-top:14px; color: var(--ink-700)">verifier message: ${escape(c.message || '')}</div>
@@ -430,22 +445,26 @@ function renderDemoBanner(c) {
   return core + renderAnchorPanel();
 }
 
-// Render the external-chain-anchor panel. Strictly framed so the verifier's
-// independence isn't undercut: "verified locally; commitment is also
-// externally anchored." Replay semantics are not chain-dependent.
+// Render the public chain anchor panel — visually parallel to the local
+// replay verification panel above it, but strictly subordinate in claim:
+// the chain timestamps the bundle's existence, not the validity of its
+// governance. Replay does the latter. This distinction is load-bearing.
 function renderAnchorPanel() {
   if (!demoAnchorReceipt) return '';
   const r = demoAnchorReceipt;
   const chainLabel = (r.chain === 'ethereum_mainnet') ? 'Ethereum mainnet' : escape(r.chain || 'unknown chain');
   const txShort = (r.tx_hash || '').slice(0, 10) + '…' + (r.tx_hash || '').slice(-8);
   const calldataShort = (r.calldata_hex || '').slice(0, 10) + '…' + (r.calldata_hex || '').slice(-8);
-  return `<div class="verdict" style="margin-bottom:18px; padding: 20px 24px; border-left: 3px solid var(--copper); background: var(--ink-900);">
-    <div class="tag" style="color: var(--copper); font-size:13px;">EXTERNAL CHAIN ANCHOR — ${chainLabel}</div>
-    <div class="meta" style="margin-top:10px; color: var(--ink-300); line-height: 1.6">
-      Verified locally. 32-byte commitment externally anchored on ${chainLabel}.
+  return `<div class="meta" style="font-family: 'DM Mono'; font-size: 10px; letter-spacing: 0.14em; color: var(--ink-700); margin-bottom: 6px; text-transform: uppercase;">
+    2 of 2 &nbsp;·&nbsp; PUBLIC CHAIN ANCHOR
+  </div>
+  <div class="verdict" style="margin-bottom:24px; padding: 20px 24px; border-left: 3px solid var(--copper); background: var(--ink-900);">
+    <div class="tag" style="color: var(--copper); font-size:13px;">ANCHORED ON ${chainLabel.toUpperCase()}</div>
+    <div class="meta" style="margin-top:10px; color: var(--ink-200); font-size:13px;">
+      Replay validates the governance. ${chainLabel} timestamps the commitment.
     </div>
-    <div class="meta" style="margin-top:6px; line-height: 1.5;">
-      The verifier operates independently of ${chainLabel} and remains portable across future infrastructure migration. The anchor is supplementary evidence, not a verifier dependency.
+    <div class="meta" style="margin-top:8px; line-height: 1.6;">
+      Verified locally. The bundle's 32-byte SHA3-256 commitment is also recorded as transaction calldata on ${chainLabel}, externally evidencing that this exact bundle existed at this block height. The verifier operates independently of ${chainLabel} and remains portable across future infrastructure migration.
     </div>
     <div class="meta" style="margin-top:14px; font-family: 'DM Mono'; font-size: 11px; color: var(--ink-400); line-height: 1.7;">
       tx&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<a href="${escape(r.etherscan_url || '#')}" target="_blank" rel="noopener" style="color: var(--copper-2);">${escape(txShort)}</a><br>
