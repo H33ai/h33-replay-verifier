@@ -57,7 +57,7 @@ use h33_replay_verify_core::verify::{verify, VerifyOptions, VerifyReport};
 
 #[derive(Parser, Debug)]
 #[command(name = "h33-replay-verify")]
-#[command(version = "0.2.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "Independent offline verifier for SCIF replay bundles (v0.1) — verify + optionally sign reports with persistent verifier identity (ML-DSA-65)")]
 struct Cli {
     /// Path to the replay bundle JSON file. Optional when --verify-transcript

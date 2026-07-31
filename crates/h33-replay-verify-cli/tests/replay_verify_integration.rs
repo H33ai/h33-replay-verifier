@@ -495,3 +495,18 @@ fn v0_2_fraud_chain_tamper_caught_by_hash_recompute() {
 
     std::fs::remove_file(&path).ok();
 }
+
+/// The `--version` flag must report the crate version from Cargo.toml,
+/// not a hardcoded string that can drift (regression guard for the
+/// 0.2.0/0.3.0 mismatch).
+#[test]
+fn version_flag_reports_cargo_pkg_version() {
+    let (code, stdout, stderr) = run_verifier(&["--version"]);
+    assert_eq!(code, 0, "expected exit 0 for --version, got {}\nstderr: {}", code, stderr);
+    assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "--version stdout {:?} must contain crate version {:?}",
+        stdout,
+        env!("CARGO_PKG_VERSION"),
+    );
+}
