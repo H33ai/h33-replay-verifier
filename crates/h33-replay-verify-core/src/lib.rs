@@ -19,4 +19,5 @@
 pub mod binding;
 pub mod bundle;
 pub mod chain;
+pub mod platform_bridge;
 pub mod verify;
